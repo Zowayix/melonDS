@@ -106,6 +106,8 @@ u32 micExtBufferWritePos;
 u32 micWavLength;
 s16* micWavBuffer;
 
+void micCallback(void* data, Uint8* stream, int len);
+
 
 void audioCallback(void* data, Uint8* stream, int len)
 {
@@ -143,6 +145,40 @@ void audioCallback(void* data, Uint8* stream, int len)
 }
 
 
+void micOpen()
+{
+    if (Config::MicInputType != 1)
+    {
+        micDevice = 0;
+        return;
+    }
+
+    SDL_AudioSpec whatIwant, whatIget;
+    memset(&whatIwant, 0, sizeof(SDL_AudioSpec));
+    whatIwant.freq = 44100;
+    whatIwant.format = AUDIO_S16LSB;
+    whatIwant.channels = 1;
+    whatIwant.samples = 1024;
+    whatIwant.callback = micCallback;
+    micDevice = SDL_OpenAudioDevice(NULL, 1, &whatIwant, &whatIget, 0);
+    if (!micDevice)
+    {
+        printf("Mic init failed: %s\n", SDL_GetError());
+    }
+    else
+    {
+        SDL_PauseAudioDevice(micDevice, 0);
+    }
+}
+
+void micClose()
+{
+    if (micDevice)
+        SDL_CloseAudioDevice(micDevice);
+
+    micDevice = 0;
+}
+
 void micLoadWav(const char* name)
 {
     SDL_AudioSpec format;
@@ -159,64 +195,67 @@ void micLoadWav(const char* name)
 
     const u64 dstfreq = 44100;
 
-    if (format.format == AUDIO_S16 || format.format == AUDIO_U16)
+    int srcinc = format.channels;
+    len /= ((SDL_AUDIO_BITSIZE(format.format) / 8) * srcinc);
+
+    micWavLength = (len * dstfreq) / format.freq;
+    if (micWavLength < 735) micWavLength = 735;
+    micWavBuffer = new s16[micWavLength];
+
+    float res_incr = len / (float)micWavLength;
+    float res_timer = 0;
+    int res_pos = 0;
+
+    for (int i = 0; i < micWavLength; i++)
     {
-        int srcinc = format.channels;
-        len /= (2 * srcinc);
+        u16 val = 0;
 
-        micWavLength = (len * dstfreq) / format.freq;
-        if (micWavLength < 735) micWavLength = 735;
-        micWavBuffer = new s16[micWavLength];
-
-        float res_incr = len / (float)micWavLength;
-        float res_timer = 0;
-        int res_pos = 0;
-
-        for (int i = 0; i < micWavLength; i++)
+        switch (SDL_AUDIO_BITSIZE(format.format))
         {
-            u16 val = ((u16*)buf)[res_pos];
-            if (SDL_AUDIO_ISUNSIGNED(format.format)) val ^= 0x8000;
+        case 8:
+            val = buf[res_pos] << 8;
+            break;
 
-            micWavBuffer[i] = val;
+        case 16:
+            if (SDL_AUDIO_ISBIGENDIAN(format.format))
+                val = (buf[res_pos*2] << 8) | buf[res_pos*2 + 1];
+            else
+                val = (buf[res_pos*2 + 1] << 8) | buf[res_pos*2];
+            break;
 
-            res_timer += res_incr;
-            while (res_timer >= 1.0)
+        case 32:
+            if (SDL_AUDIO_ISFLOAT(format.format))
             {
-                res_timer -= 1.0;
-                res_pos += srcinc;
+                u32 rawval;
+                if (SDL_AUDIO_ISBIGENDIAN(format.format))
+                    rawval = (buf[res_pos*4] << 24) | (buf[res_pos*4 + 1] << 16) | (buf[res_pos*4 + 2] << 8) | buf[res_pos*4 + 3];
+                else
+                    rawval = (buf[res_pos*4 + 3] << 24) | (buf[res_pos*4 + 2] << 16) | (buf[res_pos*4 + 1] << 8) | buf[res_pos*4];
+
+                float fval = *(float*)&rawval;
+                s32 ival = (s32)(fval * 0x8000);
+                ival = std::clamp(ival, -0x8000, 0x7FFF);
+                val = (s16)ival;
             }
+            else if (SDL_AUDIO_ISBIGENDIAN(format.format))
+                val = (buf[res_pos*4] << 8) | buf[res_pos*4 + 1];
+            else
+                val = (buf[res_pos*4 + 3] << 8) | buf[res_pos*4 + 2];
+            break;
+        }
+
+        if (SDL_AUDIO_ISUNSIGNED(format.format))
+            val ^= 0x8000;
+
+        micWavBuffer[i] = val;
+
+        res_timer += res_incr;
+        while (res_timer >= 1.0)
+        {
+            res_timer -= 1.0;
+            res_pos += srcinc;
         }
     }
-    else if (format.format == AUDIO_S8 || format.format == AUDIO_U8)
-    {
-        int srcinc = format.channels;
-        len /= srcinc;
-
-        micWavLength = (len * dstfreq) / format.freq;
-        if (micWavLength < 735) micWavLength = 735;
-        micWavBuffer = new s16[micWavLength];
-
-        float res_incr = len / (float)micWavLength;
-        float res_timer = 0;
-        int res_pos = 0;
-
-        for (int i = 0; i < micWavLength; i++)
-        {
-            u16 val = buf[res_pos] << 8;
-            if (SDL_AUDIO_ISUNSIGNED(format.format)) val ^= 0x8000;
-
-            micWavBuffer[i] = val;
-
-            res_timer += res_incr;
-            while (res_timer >= 1.0)
-            {
-                res_timer -= 1.0;
-                res_pos += srcinc;
-            }
-        }
-    }
-    else
-        printf("bad WAV format %08X\n", format.format);
 
     SDL_FreeWAV(buf);
 }
@@ -362,6 +401,8 @@ void EmuThread::run()
 
     GPU::InitRenderer(videoRenderer);
     GPU::SetRenderSettings(videoRenderer, videoSettings);
+
+    SPU::SetInterpolation(Config::AudioInterp);
 
     Input::Init();
 
@@ -623,7 +664,7 @@ void EmuThread::emuRun()
     // checkme
     emit windowEmuStart();
     if (audioDevice) SDL_PauseAudioDevice(audioDevice, 0);
-    if (micDevice)   SDL_PauseAudioDevice(micDevice, 0);
+    micOpen();
 }
 
 void EmuThread::emuPause()
@@ -636,7 +677,7 @@ void EmuThread::emuPause()
     while (EmuStatus != 2);
 
     if (audioDevice) SDL_PauseAudioDevice(audioDevice, 1);
-    if (micDevice)   SDL_PauseAudioDevice(micDevice, 1);
+    micClose();
 }
 
 void EmuThread::emuUnpause()
@@ -649,7 +690,7 @@ void EmuThread::emuUnpause()
     EmuRunning = PrevEmuStatus;
 
     if (audioDevice) SDL_PauseAudioDevice(audioDevice, 0);
-    if (micDevice)   SDL_PauseAudioDevice(micDevice, 0);
+    micOpen();
 }
 
 void EmuThread::emuStop()
@@ -658,7 +699,7 @@ void EmuThread::emuStop()
     EmuPause = 0;
 
     if (audioDevice) SDL_PauseAudioDevice(audioDevice, 1);
-    if (micDevice)   SDL_PauseAudioDevice(micDevice, 1);
+    micClose();
 }
 
 void EmuThread::emuFrameStep()
@@ -745,7 +786,7 @@ void ScreenHandler::screenOnMousePress(QMouseEvent* event)
     int x = event->pos().x();
     int y = event->pos().y();
 
-    if (Frontend::GetTouchCoords(x, y))
+    if (Frontend::GetTouchCoords(x, y, false))
     {
         touching = true;
         NDS::TouchScreen(x, y);
@@ -776,7 +817,7 @@ void ScreenHandler::screenOnMouseMove(QMouseEvent* event)
     int x = event->pos().x();
     int y = event->pos().y();
 
-    if (Frontend::GetTouchCoords(x, y))
+    if (Frontend::GetTouchCoords(x, y, true))
         NDS::TouchScreen(x, y);
 }
 
@@ -792,7 +833,7 @@ void ScreenHandler::screenHandleTablet(QTabletEvent* event)
             int x = event->x();
             int y = event->y();
 
-            if (Frontend::GetTouchCoords(x, y))
+            if (Frontend::GetTouchCoords(x, y, event->type()==QEvent::TabletMove))
             {
                 touching = true;
                 NDS::TouchScreen(x, y);
@@ -823,7 +864,7 @@ void ScreenHandler::screenHandleTouch(QTouchEvent* event)
             int x = (int)lastPosition.x();
             int y = (int)lastPosition.y();
 
-            if (Frontend::GetTouchCoords(x, y))
+            if (Frontend::GetTouchCoords(x, y, event->type()==QEvent::TouchUpdate))
             {
                 touching = true;
                 NDS::TouchScreen(x, y);
@@ -2391,11 +2432,26 @@ void MainWindow::onOpenVideoSettings()
 void MainWindow::onOpenAudioSettings()
 {
     AudioSettingsDialog* dlg = AudioSettingsDialog::openDlg(this);
+    connect(dlg, &AudioSettingsDialog::updateAudioSettings, this, &MainWindow::onUpdateAudioSettings);
     connect(dlg, &AudioSettingsDialog::finished, this, &MainWindow::onAudioSettingsFinished);
+}
+
+void MainWindow::onUpdateAudioSettings()
+{
+    SPU::SetInterpolation(Config::AudioInterp);
+
+    if (Config::AudioBitrate == 0)
+        SPU::SetDegrade10Bit(NDS::ConsoleType == 0);
+    else
+        SPU::SetDegrade10Bit(Config::AudioBitrate == 1);
 }
 
 void MainWindow::onAudioSettingsFinished(int res)
 {
+    micClose();
+
+    SPU::SetInterpolation(Config::AudioInterp);
+
     if (Config::MicInputType == 3)
     {
         micLoadWav(Config::MicWavPath);
@@ -2411,6 +2467,8 @@ void MainWindow::onAudioSettingsFinished(int res)
         else
             Frontend::Mic_SetExternalBuffer(NULL, 0);
     }
+
+    micOpen();
 }
 
 void MainWindow::onOpenWifiSettings()
@@ -2713,6 +2771,7 @@ int main(int argc, char** argv)
     );
     SANITIZE(Config::ScreenVSyncInterval, 1, 20);
     SANITIZE(Config::GL_ScaleFactor, 1, 16);
+    SANITIZE(Config::AudioInterp, 0, 3);
     SANITIZE(Config::AudioVolume, 0, 256);
     SANITIZE(Config::MicInputType, 0, 3);
     SANITIZE(Config::ScreenRotation, 0, 3);
@@ -2754,21 +2813,7 @@ int main(int argc, char** argv)
         SDL_PauseAudioDevice(audioDevice, 1);
     }
 
-    memset(&whatIwant, 0, sizeof(SDL_AudioSpec));
-    whatIwant.freq = 44100;
-    whatIwant.format = AUDIO_S16LSB;
-    whatIwant.channels = 1;
-    whatIwant.samples = 1024;
-    whatIwant.callback = micCallback;
-    micDevice = SDL_OpenAudioDevice(NULL, 1, &whatIwant, &whatIget, 0);
-    if (!micDevice)
-    {
-        printf("Mic init failed: %s\n", SDL_GetError());
-    }
-    else
-    {
-        SDL_PauseAudioDevice(micDevice, 1);
-    }
+    micDevice = 0;
 
 
     memset(micExtBuffer, 0, sizeof(micExtBuffer));
@@ -2839,7 +2884,7 @@ int main(int argc, char** argv)
     Frontend::DeInit_ROM();
 
     if (audioDevice) SDL_CloseAudioDevice(audioDevice);
-    if (micDevice)   SDL_CloseAudioDevice(micDevice);
+    micClose();
 
     SDL_DestroyCond(audioSync);
     SDL_DestroyMutex(audioSyncLock);
