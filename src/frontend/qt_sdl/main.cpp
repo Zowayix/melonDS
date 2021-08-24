@@ -58,6 +58,7 @@
 #include "WifiSettingsDialog.h"
 #include "InterfaceSettingsDialog.h"
 #include "ROMInfoDialog.h"
+#include "TitleManagerDialog.h"
 
 #include "types.h"
 #include "version.h"
@@ -1377,8 +1378,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         connect(actSetupCheats, &QAction::triggered, this, &MainWindow::onSetupCheats);
 
         menu->addSeparator();
-        actROMInfo = menu->addAction("ROM Info");
+        actROMInfo = menu->addAction("ROM info");
         connect(actROMInfo, &QAction::triggered, this, &MainWindow::onROMInfo);
+
+        actTitleManager = menu->addAction("Manage DSi titles");
+        connect(actTitleManager, &QAction::triggered, this, &MainWindow::onOpenTitleManager);
     }
     {
         QMenu* menu = menubar->addMenu("Config");
@@ -1580,6 +1584,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     actFrameStep->setEnabled(false);
 
     actSetupCheats->setEnabled(false);
+    actTitleManager->setEnabled(strlen(Config::DSiNANDPath) > 0);
 
     actEnableCheats->setChecked(Config::EnableCheats != 0);
 
@@ -2394,6 +2399,11 @@ void MainWindow::onROMInfo()
     ROMInfoDialog* dlg = ROMInfoDialog::openDlg(this);
 }
 
+void MainWindow::onOpenTitleManager()
+{
+    TitleManagerDialog* dlg = TitleManagerDialog::openDlg(this);
+}
+
 void MainWindow::onOpenEmuSettings()
 {
     emuThread->emuPause();
@@ -2408,6 +2418,9 @@ void MainWindow::onEmuSettingsDialogFinished(int res)
 
     if (EmuSettingsDialog::needsReset)
         onReset();
+
+    if (!RunningSomething)
+        actTitleManager->setEnabled(strlen(Config::DSiNANDPath) > 0);
 }
 
 void MainWindow::onOpenInputConfig()
@@ -2664,6 +2677,7 @@ void MainWindow::onEmuStart()
     actImportSavefile->setEnabled(true);
 
     actSetupCheats->setEnabled(true);
+    actTitleManager->setEnabled(false);
 
     actROMInfo->setEnabled(true);
 }
@@ -2686,6 +2700,7 @@ void MainWindow::onEmuStop()
     actFrameStep->setEnabled(false);
 
     actSetupCheats->setEnabled(false);
+    actTitleManager->setEnabled(strlen(Config::DSiNANDPath) > 0);
 
     actROMInfo->setEnabled(false);
 }
@@ -2729,7 +2744,24 @@ void emuStop()
     OSD::AddMessage(0xFFC040, "Shutdown");
 }
 
+MelonApplication::MelonApplication(int& argc, char** argv)
+    : QApplication(argc, argv)
+{
+    setWindowIcon(QIcon(":/melon-icon"));
+}
 
+bool MelonApplication::event(QEvent *event)
+{
+    if (event->type() == QEvent::FileOpen)
+    {
+        QFileOpenEvent *openEvent = static_cast<QFileOpenEvent*>(event);
+
+        emuThread->emuPause();
+        mainWindow->loadROM(openEvent->file());
+    }
+
+    return QApplication::event(event);
+}
 
 int main(int argc, char** argv)
 {
@@ -2740,8 +2772,7 @@ int main(int argc, char** argv)
 
     Platform::Init(argc, argv);
 
-    QApplication melon(argc, argv);
-    melon.setWindowIcon(QIcon(":/melon-icon"));
+    MelonApplication melon(argc, argv);
 
     // http://stackoverflow.com/questions/14543333/joystick-wont-work-using-sdl
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
