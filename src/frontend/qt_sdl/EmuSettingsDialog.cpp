@@ -296,7 +296,7 @@ void EmuSettingsDialog::on_btnDLDISDBrowse_clicked()
     QString file = QFileDialog::getOpenFileName(this,
                                                 "Select DLDI SD image...",
                                                 EmuDirectory,
-                                                "Image files (*.bin *.rom *.img);;Any file (*.*)");
+                                                "Image files (*.bin *.rom *.img *.dmg);;Any file (*.*)");
 
     if (file.isEmpty()) return;
 
@@ -332,7 +332,7 @@ void EmuSettingsDialog::on_btnDSiSDBrowse_clicked()
     QString file = QFileDialog::getOpenFileName(this,
                                                 "Select DSi SD image...",
                                                 EmuDirectory,
-                                                "Image files (*.bin *.rom *.img);;Any file (*.*)");
+                                                "Image files (*.bin *.rom *.img *.dmg);;Any file (*.*)");
 
     if (file.isEmpty()) return;
 
